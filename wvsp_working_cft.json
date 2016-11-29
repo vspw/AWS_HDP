@@ -1,0 +1,942 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "CloudFormation template to create a VPC with an IG, private sub-net",
+
+  "Parameters" : {
+    "AwsEnv" : {
+      "Description" : "The targeted AWS environment",
+      "Type" : "String",
+      "AllowedValues" : [ "sandbox", "dev", "nonprod", "prod" ],
+      "ConstraintDescription" : "must be sandbox, dev, nonprod, or prod",
+      "Default" : "sandbox"
+    },
+
+    "AppEnv" : {
+      "Description" : "The name of the application environment",
+      "Type" : "String",
+      "MinLength" : "1",
+      "MaxLength" : "16",
+      "AllowedPattern": "[a-zA-Z-]*"
+    },
+
+    "AppName" : {
+      "Description" : "The name of the application",
+      "Type" : "String",
+      "MinLength" : "1",
+      "AllowedPattern": "[a-zA-Z-]*",
+      "Default" : "awsVenkata"
+    },
+
+    "SupportEmail" : {
+      "Description" : "The email supporting the application",
+      "Type" : "String",
+      "MinLength" : "1",
+      "Default" : "wvsatyaprakash@gmail.com"
+    },
+
+    "AppVersion" : {
+      "Description" : "The version of the application",
+      "Type" : "String",
+      "MinLength" : "1",
+      "Default" : "0.1"
+    },
+
+    "S3Bucket" : {
+      "Description" : "The S3 bucket used for deployment",
+      "Type" : "String",
+      "MinLength" : "1",
+      "Default" : "wvspbucket1"
+    },
+
+    "SSHLocation" : {
+      "Description" : "SSH access for Ambari Node",
+      "Type" : "String",
+      "MinLength": "9",
+      "MaxLength": "18",
+      "Default" : "0.0.0.0/0",
+      "AllowedPattern" : "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})",
+      "ConstraintDescription" : "Must be a valid CIDR range."
+    },
+           
+    "hdpDBName": {
+      "Default": "hdpmaster",
+      "Description" : "The database name",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "64"
+    },
+
+    "hdpDBUsername": {
+      "Default": "hdpadmin",
+      "NoEcho": "true",
+      "Description" : "The database admin account username",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "16"
+    },
+    
+    "DBClass" : {
+      "Default" : "db.m1.small",
+      "Description" : "Database instance class",
+      "Type" : "String",
+      "AllowedValues" : [ "db.m1.small", "db.m1.large", "db.m1.xlarge", "db.m2.xlarge", "db.m2.2xlarge", "db.m2.4xlarge", "db.m4.large" ],
+      "ConstraintDescription" : "must select a valid database instance type."
+    },
+
+    "DBAllocatedStorage" : {
+      "Default": "15",
+      "Description" : "The size of the database (Gb)",
+      "Type": "Number",
+      "MinValue": "5",
+      "MaxValue": "1024",
+      "ConstraintDescription" : "must be between 5 and 1024Gb."
+    },
+
+    "KeyName": {
+      "Description" : "EC2 KeyPair name for SSH access",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "255",
+      "Default" : "wvsatyaprakash_aws1",
+      "AllowedPattern" : "[\\x20-\\x7E]*",
+      "ConstraintDescription" : "Must be only ASCII characters."
+    },
+
+    "CreateDate" : {
+      "Description" : "This date is used to tag instances for later retreival during lambda.",
+      "Default" : "2016-11-01 01:00:00",
+      "Type" : "String",
+      "AllowedPattern" : "^\\d{4}(-\\d{2}){2} (\\d{2}:){2}\\d{2}$",
+      "ConstraintDescription" : "Must be a valid date."
+    },
+
+    "IamRoleName" : {
+      "Description" : "This is the IAM RoleName used to associate the nodes with the IAM Role",
+      "Default" : "iam_wvsp_admin",
+      "Type": "String",
+      "MinLength": "1",
+      "MaxLength": "64"
+    },
+
+    "DomainDNSName" : {
+      "Description" : "Fully qualified domain name (FQDN) of the forest root domain e.g. corp.example.com",
+      "Type" : "String",
+      "MinLength" : "3",
+      "MaxLength" : "25",
+      "AllowedPattern" : "[a-zA-Z0-9]+\\..+",
+      "Default" : "wvsp.hdp.com"
+    },
+
+    "DomainNetBIOSName" : {
+      "Description" : "NetBIOS name of the domain (upto 15 characters) for users of earlier versions of Windows e.g. CORP",
+      "Type" : "String",
+      "MinLength" : "1",
+      "MaxLength" : "15",
+      "AllowedPattern" : "[a-zA-Z0-9]+",
+      "Default" : "wvsp"
+    },
+   
+    "RestoreModePassword" : {
+      "Description" : "Password for a separate Administrator account when the domain controller is in Restore Mode. Must be at least 8 characters containing letters, numbers and symbols",
+      "Type" : "String",
+      "MinLength" : "8",
+      "MaxLength" : "32",
+      "NoEcho" : "True",
+      "Default" : "hadoop!23"
+    },
+
+    "SourceCidrForRDP" : {
+      "Description" : "IP Cidr from which you are likely to RDP into the instances. You can add rules later by modifying the created security groups e.g. 54.32.98.160/32",
+      "Type" : "String",
+      "MinLength" : "9",
+      "MaxLength" : "18",
+      "AllowedPattern" : "^([0-9]+\\.){3}[0-9]+\\/[0-9]+$",
+      "Default" : "0.0.0.0/0"
+    }
+
+  },
+  
+    "Conditions" : {
+        "nokey"     : { "Fn::Equals" : [{ "Ref" : "KeyName" }, "" ]},
+        "sandbox"   : { "Fn::Equals" : [{ "Ref" : "AwsEnv" }, "sandbox" ]},
+        "dev"       : { "Fn::Equals" : [{ "Ref" : "AwsEnv" }, "dev" ]},
+        "nonprod"   : { "Fn::Equals" : [{ "Ref" : "AwsEnv" }, "nonprod" ]},
+        "prod"      : { "Fn::Equals" : [{ "Ref" : "AwsEnv" }, "prod" ]}
+    },
+
+"Mappings" : {
+     
+    "InstanceTypeMap" : {
+      "us-east-1" : {
+        "sandbox"   : "t2.small",
+        "dev"       : "m3.2xlarge",
+        "nonprod"   : "m3.2xlarge",
+        "prod"      : "m4.2xlarge"
+      }
+    }, 
+   "SubnetConfig" : {
+      "VPC"     : { "CIDR" : "10.0.0.0/16" },
+      "Public"  : { "CIDR" : "10.0.0.0/24" }
+    },
+
+    "UtilityInstanceTypeMap" : {
+      "us-east-1" : {
+        "sandbox"   : "t2.small",
+        "dev"       : "m3.2xlarge",
+        "nonprod"   : "m3.2xlarge",
+        "prod"      : "m4.2xlarge"
+      }
+    },
+
+    "AWSRegion2AMI" : {
+      "us-east-1"        : {"Windows2008r2" : "ami-7d7f026a", "Windows2012r2" : "ami-ee7805f9"},
+      "us-west-2"        : {"Windows2008r2" : "ami-8505d7e5", "Windows2012r2" : "ami-2827f548"},
+      "us-west-1"        : {"Windows2008r2" : "ami-576c2337", "Windows2012r2" : "ami-c06b24a0"},
+      "eu-west-1"        : {"Windows2008r2" : "ami-ea84fd99", "Windows2012r2" : "ami-9b81f8e8"},
+      "eu-central-1"     : {"Windows2008r2" : "ami-a947b5c6", "Windows2012r2" : "ami-7248ba1d"},
+      "ap-northeast-1"   : {"Windows2008r2" : "ami-1efc2d7f", "Windows2012r2" : "ami-fffd2c9e"},
+      "ap-northeast-2"   : {"Windows2008r2" : "ami-3323f65d", "Windows2012r2" : "ami-ee20f580"},
+      "ap-southeast-1"   : {"Windows2008r2" : "ami-be5389dd", "Windows2012r2" : "ami-ac5389cf"},
+      "ap-southeast-2"   : {"Windows2008r2" : "ami-2a9eaf49", "Windows2012r2" : "ami-899eafea"},
+      "ap-south-1"       : {"Windows2008r2" : "ami-43fd882c", "Windows2012r2" : "ami-75fe8b1a"},
+      "sa-east-1"        : {"Windows2008r2" : "ami-a02bbbcc", "Windows2012r2" : "ami-8e2fbfe2"},
+      "cn-north-1"       : {"Windows2008r2" : "ami-ca68bda7", "Windows2012r2" : "ami-246cb949"}
+    },
+
+    "AMIMap" : {
+      "us-east-1" : { "dev" : "ami-02dc4c6b", "sandbox" : "ami-02dc4c6b" },
+      "us-west-1" : { "dev" : "ami-c9c7978c", "sandbox" : "ami-cfc7978a" },
+      "eu-west-1" : { "dev" : "ami-37c2f643", "sandbox" : "ami-31c2f645" },
+      "ap-southeast-1" : { "dev" : "ami-66f28c34", "sandbox" : "ami-60f28c32" },
+      "ap-northeast-1" : { "dev" : "ami-9c03a89d", "sandbox" : "ami-a003a8a1" }
+    },
+
+    "MasterCountMap" : {
+      "us-east-1" : {       
+        "sandbox"   : 2,
+        "dev"       : 1,
+        "nonprod"   : 2,
+        "prod"      : 2
+      }
+    }, 
+   
+    "WorkerCountMap" : {
+      "us-east-1" : {       
+        "sandbox"   : 3,
+        "dev"       : 3,
+        "nonprod"   : 4,
+        "prod"      : 4
+      }
+    },
+
+    "HostCountMap" : {
+      "us-east-1" : {       
+        "sandbox"   : 7,
+        "dev"       : 6,
+        "nonprod"   : 8,
+        "prod"      : 8
+      }
+    },
+
+    "InstanceEBSBlockMap" : {
+      "us-east-1" : {
+        "sandbox" : [
+            { "DeviceName" : "/dev/sdc", "Ebs" : { "VolumeSize" : "100", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } },
+            { "DeviceName" : "/dev/sdd", "Ebs" : { "VolumeSize" : "100", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } }
+            ],
+        "nonprod" : [
+            { "DeviceName" : "/dev/sdc", "Ebs" : { "VolumeSize" : "500", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } },
+            { "DeviceName" : "/dev/sdd", "Ebs" : { "VolumeSize" : "500", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } }
+            ],
+        "prod"    : [
+            { "DeviceName" : "/dev/sdc", "Ebs" : { "VolumeSize" : "1000", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } },
+            { "DeviceName" : "/dev/sdd", "Ebs" : { "VolumeSize" : "1000", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } },
+            { "DeviceName" : "/dev/sde", "Ebs" : { "VolumeSize" : "1000", "VolumeType" : "gp2", "DeleteOnTermination" : "True" } }
+            ]
+      }
+    }
+  },
+
+ 
+  "Resources" : {
+
+    "VPC" : {
+       "Type" : "AWS::EC2::VPC",
+    "Properties" : {
+      "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "VPC", "CIDR" ]},
+      "EnableDnsSupport" : "true",
+      "EnableDnsHostnames" : "true",
+      "Tags" : [ {"Key" : "VPC", "Value" : "wvsp_VPC"} ]
+     }
+    },
+    
+
+    "PublicSubnet" : {
+         "Type" : "AWS::EC2::Subnet",
+         "Properties" : {
+            "VpcId" : { "Ref" : "VPC" },
+            "CidrBlock" : { "Fn::FindInMap" : [ "SubnetConfig", "Public", "CIDR" ]},
+            "AvailabilityZone" : "us-east-1d",
+            "Tags" : [ { "Key" : "Subnet", "Value" : "PublicSubnet" } ]
+         }
+      },
+
+    "InternetGateway" : {
+      "Type" : "AWS::EC2::InternetGateway",
+      "Properties" : {
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" }
+        ]
+      }
+    },
+
+   "GatewayToInternet" : {
+       "Type" : "AWS::EC2::VPCGatewayAttachment",
+       "Properties" : {
+         "VpcId" : { "Ref" : "VPC" },
+         "InternetGatewayId" : { "Ref" : "InternetGateway" }
+       }
+    },
+
+    "PublicRouteTable" : {
+      "Type" : "AWS::EC2::RouteTable",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" }
+        ]
+      }
+    },
+
+    "PublicRoute" : {
+      "Type" : "AWS::EC2::Route",
+      "DependsOn" : "GatewayToInternet",
+      "Properties" : {
+        "RouteTableId" : { "Ref" : "PublicRouteTable" },
+        "DestinationCidrBlock" : "0.0.0.0/0",
+        "GatewayId" : { "Ref" : "InternetGateway" }
+      }
+    },
+
+    "PublicSubnetRouteTableAssociation" : {
+      "Type" : "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties" : {
+        "SubnetId" : { "Ref" : "PublicSubnet" },
+        "RouteTableId" : { "Ref" : "PublicRouteTable" }
+      }
+    },
+
+    "PublicNetworkAcl" : {
+      "Type" : "AWS::EC2::NetworkAcl",
+      "Properties" : {
+        "VpcId" : { "Ref" : "VPC" },
+        "Tags" : [
+          { "Key" : "Application", "Value" : { "Ref" : "AWS::StackName" } },
+          { "Key" : "Network", "Value" : "Public" }
+        ]
+      }
+    },
+
+
+ "InboundHTTPPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "100",
+        "Protocol" : "6",
+        "RuleAction" : "allow",
+        "Egress" : "false",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "80", "To" : "80" }
+      }
+    },
+
+    "InboundHTTPSPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "101",
+        "Protocol" : "6",
+        "RuleAction" : "allow",
+        "Egress" : "false",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "443", "To" : "443" }
+      }
+    },
+
+    "InboundSSHPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "102",
+        "Protocol" : "6",
+        "RuleAction" : "allow",
+        "Egress" : "false",
+        "CidrBlock" : { "Ref" : "SSHLocation" },
+        "PortRange" : { "From" : "22", "To" : "22" }
+      }
+    },
+
+    "InboundEphemeralPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "103",
+        "Protocol" : "6",
+        "RuleAction" : "allow",
+        "Egress" : "false",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "1024", "To" : "65535" }
+      }
+    },
+
+    "InboundICMPPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "104",
+        "Protocol" : "1",
+        "Icmp" : { "Code" : "-1", "Type" : "-1" },
+        "RuleAction" : "allow",
+        "Egress" : "false",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "0", "To" : "65535" }
+      }
+    },
+    "OutboundICMPNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "200",
+        "Protocol" : "1",
+        "Icmp" : { "Code" : "-1", "Type" : "-1" },
+        "RuleAction" : "allow",
+        "Egress" : "true",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "0", "To" : "65535" }
+      }
+    },
+
+    "OutboundPublicNetworkAclEntry" : {
+      "Type" : "AWS::EC2::NetworkAclEntry",
+      "Properties" : {
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" },
+        "RuleNumber" : "100",
+        "Protocol" : "6",
+        "RuleAction" : "allow",
+        "Egress" : "true",
+        "CidrBlock" : "0.0.0.0/0",
+        "PortRange" : { "From" : "0", "To" : "65535" }
+      }
+    },
+
+
+    "PublicSubnetNetworkAclAssociation" : {
+      "Type" : "AWS::EC2::SubnetNetworkAclAssociation",
+      "Properties" : {
+        "SubnetId" : { "Ref" : "PublicSubnet" },
+        "NetworkAclId" : { "Ref" : "PublicNetworkAcl" }
+      }
+    },
+
+    "Node1" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "GatewayToInternet",
+         "Properties" : {
+            "ImageId" : { "Fn::FindInMap" : [ "AMIMap", { "Ref" : "AWS::Region" }, { "Ref" : "AwsEnv" }]},
+            "KeyName" : "wvsatyaprakash_aws1",
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "HDPSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+        "InstanceType": {
+          "Fn::FindInMap": ["InstanceTypeMap", {
+            "Ref": "AWS::Region"
+          }, {
+            "Ref": "AwsEnv"
+          }]
+        },
+        "IamInstanceProfile": "iam_wvsp_admin",
+        "KeyName": {
+          "Ref": "KeyName"
+        }
+         }
+      },
+    "Node2" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "GatewayToInternet",
+         "Properties" : {
+            "ImageId" : { "Fn::FindInMap" : [ "AMIMap", { "Ref" : "AWS::Region" }, { "Ref" : "AwsEnv" }]},
+            "KeyName" : "wvsatyaprakash_aws1",
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "HDPSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+        "InstanceType": {
+          "Fn::FindInMap": ["InstanceTypeMap", {
+            "Ref": "AWS::Region"
+          }, {
+            "Ref": "AwsEnv"
+          }]
+        },
+        "IamInstanceProfile": "iam_wvsp_admin",
+        "KeyName": {
+          "Ref": "KeyName"
+        }
+         }
+      },
+      "Node3" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "GatewayToInternet",
+         "Properties" : {
+            "ImageId" : { "Fn::FindInMap" : [ "AMIMap", { "Ref" : "AWS::Region" }, { "Ref" : "AwsEnv" }]},
+            "KeyName" : "wvsatyaprakash_aws1",
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "HDPSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+        "InstanceType": {
+          "Fn::FindInMap": ["InstanceTypeMap", {
+            "Ref": "AWS::Region"
+          }, {
+            "Ref": "AwsEnv"
+          }]
+        },
+        "IamInstanceProfile": "iam_wvsp_admin",
+        "KeyName": {
+          "Ref": "KeyName"
+        }
+         }
+      },
+
+      "Node4" : {
+         "Type" : "AWS::EC2::Instance",
+         "DependsOn" : "GatewayToInternet",
+         "Properties" : {
+            "ImageId" : { "Fn::FindInMap" : [ "AMIMap", { "Ref" : "AWS::Region" }, { "Ref" : "AwsEnv" }]},
+            "KeyName" : "wvsatyaprakash_aws1",
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "HDPSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+        "InstanceType": {
+          "Fn::FindInMap": ["InstanceTypeMap", {
+            "Ref": "AWS::Region"
+          }, {
+            "Ref": "AwsEnv"
+          }]
+        },
+        "IamInstanceProfile": "iam_wvsp_admin",
+        "KeyName": {
+          "Ref": "KeyName"
+        }
+         }
+      },
+
+  "LoadBalancerHttpSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : {
+          "Fn::Join" : [ " ", [{ "Ref" : "AppName" }, { "Ref" : "AppEnv" }, "Http ELB Security Group" ]]
+        },
+        "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress" : [ 
+                {"IpProtocol" : "ICMP", "FromPort" : "-1",   "ToPort" : "-1",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "3389",   "ToPort" : "3389",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8080",   "ToPort" : "8080",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8085",   "ToPort" : "8085",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "9090",   "ToPort" : "9090",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "9095",   "ToPort" : "9095",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "16030",  "ToPort" : "16030",  "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "50070",  "ToPort" : "50070",  "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "9999",   "ToPort" : "9999",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "9083",   "ToPort" : "9083",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "6080",   "ToPort" : "6080",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "9292",   "ToPort" : "9292",   "CidrIp" : "0.0.0.0/0"},  
+                {"IpProtocol" : "TCP", "FromPort" : "60",     "ToPort" : "60",     "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "183",    "ToPort" : "183",    "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "10030",  "ToPort" : "10030",  "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8088",   "ToPort" : "8088",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8025",   "ToPort" : "8025",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8030",   "ToPort" : "8030",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8141",   "ToPort" : "8141",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "45454",  "ToPort" : "45454",  "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "10200",  "ToPort" : "10200",  "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8188",   "ToPort" : "8188",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "8888",   "ToPort" : "8888",   "CidrIp" : "0.0.0.0/0"},
+                {"IpProtocol" : "TCP", "FromPort" : "21000",  "ToPort" : "21010",  "CidrIp" : "0.0.0.0/0"} ],
+        "Tags" : [
+          { "Key" : "Name", "Value": { "Fn::Join" : [ "-", [{ "Ref" : "AppName" }, { "Ref" : "AppEnv" }, "ELB" ]]}},
+          { "Key" : "applicationname", "Value": { "Ref" : "AppName" }},
+          { "Key" : "applicationsupportemail", "Value": { "Ref" : "SupportEmail" }},
+          { "Key" : "environment", "Value": { "Ref" : "AppEnv" }},
+          { "Key" : "apptier", "Value": "elb" }
+        ]
+      }
+    },
+
+  
+    "LoadBalancerTcpipSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : {
+          "Fn::Join" : [ " ", [{ "Ref" : "AppName" }, { "Ref" : "AppEnv" }, "Https ELB Security Group" ]]
+        },
+        "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress" : [ 
+                 {"IpProtocol" : "TCP", "FromPort" : "22",    "ToPort"  : "22",    "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "3306",  "ToPort"  : "3306",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "8020",  "ToPort"  : "8020",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "8050",  "ToPort"  : "8050",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "8190",  "ToPort"  : "8190",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "9090",  "ToPort"  : "9090",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "9997",  "ToPort"  : "9997",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "9999",  "ToPort"  : "9999",  "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "10000", "ToPort"  : "10000", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "11000", "ToPort"  : "11000", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "11443", "ToPort"  : "11443", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "12243", "ToPort"  : "12243", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "12999", "ToPort"  : "12999", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "16000", "ToPort"  : "16000", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "16020", "ToPort"  : "16020", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "19888", "ToPort"  : "19888", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "41414", "ToPort"  : "41414", "CidrIp" : "0.0.0.0/0"},
+                 {"IpProtocol" : "TCP", "FromPort" : "42424", "ToPort"  : "42424", "CidrIp" : "0.0.0.0/0"} ],
+         "Tags" : [
+          { "Key" : "Name", "Value": { "Fn::Join" : [ "-", [{ "Ref" : "AppName" }, { "Ref" : "AppEnv" }, "ELB" ]]}},
+          { "Key" : "applicationname", "Value": { "Ref" : "AppName" }},
+          { "Key" : "applicationsupportemail", "Value": { "Ref" : "SupportEmail" }},
+          { "Key" : "environment", "Value": { "Ref" : "AppEnv" }},
+          { "Key" : "apptier", "Value": "elb" }
+        ]
+      }
+    },
+
+      "HDPSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "DependsOn": ["LoadBalancerTcpipSecurityGroup"],
+      "Properties": {
+        "GroupDescription": {
+          "Fn::Join": [" ", [{
+            "Ref": "AppName"
+          }, {
+            "Ref": "AppEnv"
+          }, "Default Security Group"]]
+        },
+        "VpcId": {
+          "Ref": "VPC"
+        },
+        "SecurityGroupIngress": [{
+          "SourceSecurityGroupId": {
+            "Fn::GetAtt": ["LoadBalancerHttpSecurityGroup", "GroupId"]
+          },
+          "IpProtocol": "-1"
+        }, {
+          "SourceSecurityGroupId": {
+            "Fn::GetAtt": ["LoadBalancerTcpipSecurityGroup", "GroupId"]
+          },
+          "IpProtocol": "-1"
+        }, {
+          "IpProtocol": "-1",
+          "FromPort": "22",
+          "ToPort": "22",
+          "CidrIp": "0.0.0.0/0"
+        }],
+        "Tags": [{
+          "Key": "Name",
+          "Value": {
+            "Fn::Join": ["-", [{
+              "Ref": "AppName"
+            }, {
+              "Ref": "AppEnv"
+            }, "app"]]
+          }
+        }, {
+          "Key": "applicationname",
+          "Value": {
+            "Ref": "AppName"
+          }
+        }, {
+          "Key": "applicationsupportemail",
+          "Value": {
+            "Ref": "SupportEmail"
+          }
+        }, {
+          "Key": "environment",
+          "Value": {
+            "Ref": "AppEnv"
+          }
+        }]
+      }
+    },
+
+"DomainController": {
+      "Type": "AWS::EC2::Instance",
+      "DependsOn": "DomainControllerSecurityGroup",
+      "Metadata": {
+        "AWS::CloudFormation::Init": {
+          "config": {
+            "files": {
+              "c:\\cfn\\cfn-hup.conf": {
+                "content": {
+                  "Fn::Join": ["", [
+                    "[main]\n",
+                    "stack=", {
+                      "Ref": "AWS::StackId"
+                    }, "\n",
+                    "region=", {
+                      "Ref": "AWS::Region"
+                    }, "\n"
+                  ]]
+                }
+              },
+
+              "c:\\cfn\\hooks.d\\cfn-auto-reloader.conf": {
+                "content": {
+                  "Fn::Join": ["", [
+                    "[cfn-auto-reloader-hook]\n",
+                    "triggers=post.update\n",
+                    "path=Resources.DomainController.Metadata.AWS::CloudFormation::Init\n",
+                    "action=cfn-init.exe -v -s ", {
+                      "Ref": "AWS::StackId"
+                    },
+                    " -r DomainController",
+                    " --region ", {
+                      "Ref": "AWS::Region"
+                    }, "\n"
+                  ]]
+                }
+              },
+
+              "C:\\cfn\\RunCommand.bat": {
+                "content": "%~1\nIF %ERRORLEVEL% GTR 10 ( exit /b 1 ) else ( exit /b 0 )"
+              }
+            },
+
+            "commands": {
+              "1-run-dcpromo": {
+                "command": {
+                  "Fn::Join": ["", [
+                    "C:\\cfn\\RunCommand.bat \"dcpromo /unattend  /ReplicaOrNewDomain:Domain  /NewDomain:Forest  /NewDomainDNSName:", {
+                      "Ref": "DomainDNSName"
+                    },
+                    "  /ForestLevel:4 /DomainNetbiosName:", {
+                      "Ref": "DomainNetBIOSName"
+                    },
+                    " /DomainLevel:4  /InstallDNS:Yes  /ConfirmGc:Yes  /CreateDNSDelegation:No  /DatabasePath:\"C:\\Windows\\NTDS\"  /LogPath:\"C:\\Windows\\NTDS\"  /SYSVOLPath:\"C:\\Windows\\SYSVOL\" /SafeModeAdminPassword=", {
+                      "Ref": "RestoreModePassword"
+                    },
+                    " /RebootOnCompletion:Yes\""
+                  ]]
+                },
+                "waitAfterCompletion": "forever"
+              },
+              "2-signal-success": {
+                "command": {
+                  "Fn::Join": ["", [
+                    "cfn-signal.exe -e 0 \"", {
+                      "Fn::Base64": { "Ref" : "AWS::StackName"
+                      }
+                    }, "\""
+                  ]]
+                }
+              }
+            },
+
+            "services": {
+              "windows": {
+                "cfn-hup": {
+                  "enabled": "true",
+                  "ensureRunning": "true",
+                  "files": ["c:\\cfn\\cfn-hup.conf", "c:\\cfn\\hooks.d\\cfn-auto-reloader.conf"]
+                }
+              }
+            }
+          }
+        }
+      },
+
+      "Properties": {
+        "ImageId": {
+          "Fn::FindInMap": ["AWSRegion2AMI", {
+            "Ref": "AWS::Region"
+          }, "Windows2008r2"]
+        },
+        "InstanceType" : { "Fn::FindInMap" : [ "InstanceTypeMap", { "Ref" : "AWS::Region" }, { "Ref" : "AwsEnv" }]},
+        "NetworkInterfaces" : [{
+          "GroupSet"                 : [{ "Ref" : "DomainControllerSecurityGroup" }],
+          "AssociatePublicIpAddress" : "true",
+          "DeviceIndex"              : "0",
+          "DeleteOnTermination"      : "true",
+          "SubnetId"                 : { "Ref" : "PublicSubnet" }
+        }],
+        "KeyName": {
+          "Ref": "KeyName"
+        },
+        "UserData": {
+          "Fn::Base64": {
+            "Fn::Join": ["", [
+              "<script>\n",
+
+              "cfn-init.exe -v -s ", {
+                "Ref": "AWS::StackId"
+              },
+              " -r DomainController ",
+              " --region ", {
+                "Ref": "AWS::Region"
+              }, "\n",
+
+              "</script>"
+            ]]
+          }
+        }
+      }
+    },
+
+    "DomainControllerSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Domain Controller",
+         "VpcId" : { "Ref" : "VPC" },
+        "SecurityGroupIngress": [{
+          "IpProtocol": "udp",
+          "FromPort": "123",
+          "ToPort": "123",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "135",
+          "ToPort": "135",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "138",
+          "ToPort": "138",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "1024",
+          "ToPort": "65535",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "389",
+          "ToPort": "389",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "389",
+          "ToPort": "389",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "636",
+          "ToPort": "636",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "3268",
+          "ToPort": "3268",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "3269",
+          "ToPort": "3269",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "53",
+          "ToPort": "53",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "53",
+          "ToPort": "53",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "88",
+          "ToPort": "88",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "88",
+          "ToPort": "88",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "445",
+          "ToPort": "445",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "445",
+          "ToPort": "445",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "udp",
+          "FromPort": "135",
+          "ToPort": "135",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }, {
+          "IpProtocol": "tcp",
+          "FromPort": "3389",
+          "ToPort": "3389",
+          "CidrIp": {
+            "Ref": "SourceCidrForRDP"
+          }
+        }, {
+          "IpProtocol": "icmp",
+          "FromPort": "-1",
+          "ToPort": "-1",
+"SourceSecurityGroupId" : {"Fn::GetAtt": ["HDPSecurityGroup","GroupId" ] }
+        }]
+      }
+    },
+
+    "DomainMemberSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "VpcId" : { "Ref" : "VPC" },
+        "GroupDescription": "Domain Members",
+        "SecurityGroupIngress": [{ "IpProtocol" : "tcp", "FromPort" : "3389", "ToPort"  : "3389", "CidrIp" : "0.0.0.0/0"}]
+      }
+    }
+
+  },
+      
+  "Outputs": {
+      "DomainControllerDNSName" : {
+      "Value" : { "Fn::GetAtt" : [ "DomainController", "PublicDnsName" ] },
+      "Description" : "Public DNS name of Active Directory server for RDP connection"
+    },
+    "DomainControllerIP" : {
+      "Value" : { "Fn::GetAtt" : [ "DomainController", "PrivateIp" ] },
+      "Description" : "Private IP address of Active Directory server which is also a DNS server"
+    },
+    "DomainAdmin" : {
+      "Value" : { "Fn::Join" : ["", [{ "Ref" : "DomainNetBIOSName" }, "\\Administrator" ]] },
+      "Description" : "Default domain administrator account"
+    },
+    "DomainAdminPassword" : {
+      "Value" : "Please retrieve Administrator password of the instance"
+    }
+   
+  }
+
+}
